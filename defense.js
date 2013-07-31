@@ -7,6 +7,16 @@
         var dx = this.x - v.x, dy = this.y - v.y;
         return Math.sqrt( dx * dx + dy * dy );
     };
+	Vector.prototype.set = function( x, y ) {
+		this.x = x;
+		this.y = y;
+	};
+	Vector.prototype.normalize = function() {
+		var length = Math.sqrt( this.x * this.x + this.y * this.y );
+		this.x /= length;
+		this.y /= length;
+	};
+	window.Vector = Vector;
 
     function SpriteSheet( path, frame_size, frame_count, animation_speed ) {
         this.image = new Image();
@@ -24,11 +34,11 @@
     }
 
     function Entity( sprite, position ) {
-        if ( sprite === undefined ) return;
-
-        this.sprite = sprite;
-        this.position = position;
-        this.orientation = 0; // Default to "up"
+        if ( sprite !== undefined ) {
+			this.sprite = sprite;
+			this.position = position;
+			this.orientation = 0; // Default to "up"
+		}
     }
 
     function Enemy() {
@@ -40,23 +50,70 @@
 
         Entity.call( this, sprite, starting_position );
 
-        this.health = 100;
+        this.health = 100 * difficulty_modifier;
     }
     Enemy.prototype = new Entity();
+	Enemy.prototype.applyDamage = function() {
+		var enemy_index = enemies.indexOf( this );
 
-    function Tower( sprite, position ) {
-        Entity.call( this, sprite, position );
+		if ( enemy_index < 0 ) {
+			// This enemy has already died
+			return;
+		}
 
-        this.charge = 100;
-    }
-    Enemy.prototype = new Entity();
+		this.health -= bullet_damage;
+
+		// Does this kill the enemy?
+		if ( this.health <= 0 ) {
+			// Yep, dead
+
+			// Remove from the enemies array
+			enemies.splice(
+				enemy_index,
+				1
+			);
+
+			// Give gold and score
+			score += 10 * difficulty_modifier; // Score increases with difficulty
+			gold += 5 * difficulty_modifier;
+
+			// Create explosion
+			explosions.push( new Explosion( this.position ) );
+		}
+	};
+
+	function Tower( sprite, position ) {
+		Entity.call( this, sprite, position );
+
+		this.charge = 100; // Tower can only fire when its charge is 100
+		this.target = null; // Active lock on an enemy
+	}
+	Tower.prototype = new Entity();
+
+	function Bullet( tower, enemy ) {
+		Entity.call( this, null, new Vector( tower.position.x, tower.position.y ) );
+
+		this.target = enemy; // Active lock on an enemy
+	}
+	Bullet.prototype = new Entity();
+
+	function Explosion( position ) {
+		Entity.call(
+			this,
+			new Sprite( spritesheets.explosion ),
+			position
+		);
+	}
+	Explosion.prototype = new Entity();
 
     var canvas, // Canvas element
         ctx, // 2D canvas context
 
-        last_render_time = null, // Time of last frame render
+		game_over = false, // Set to `true` when game ends
+		animation_request, // Result of the most recent requestAnimationFrame
+        last_render_time = null,// Time of last frame render, used to calculate the delta between renders
 
-        map = [ // representation of the game map
+        map = [ // representation of the game map, 0 is field and 1 is road
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0,
@@ -87,8 +144,18 @@
         tower_cost = 50, // How much a tower costs
         tower_recharge = 100, // How much charge a tower recharges per second
 
-        score = 0,
-        gold = 200;
+		bullets = [], // Array of all the live bullets
+		bullet_speed = 120, // How far a bullet travels per second
+		bullet_hit_radius = 20, // Distance from target to be considered a hit
+		bullet_damage = 20, // How much health each bullet takes away
+
+		explosions = [], // Array of all active explosions
+
+        score = 0, // Player's score
+        gold = 200, // Player's gold
+
+		difficulty_modifier = 1, // Higher modifier means more difficulty
+		modifier_increase = 0.03; // How much to add to the modifier every second
 
     function findRoute() {
         var current_tile = [
@@ -185,16 +252,16 @@
 
     function initSpriteSheets() {
         // new SpriteSheet( path, frame_size, frame_count, animation_speed );
-        spritesheets.enemy = new SpriteSheet( 'images/enemy_1.png', 100, 3, 0.01 );
-
-        spritesheets.tower = new SpriteSheet( 'images/enemy_1.png', 100, 1, 0 );
+        spritesheets.enemy = new SpriteSheet( 'images/enemy.png', 100, 3, 0.01 );
+		spritesheets.tower = new SpriteSheet( 'images/tower.png', 100, 1, 0 );
+		spritesheets.explosion = new SpriteSheet( 'images/explosion.png', 100, 6, 0.01 );
     }
 
     function spawnEnemy() {
         enemies.push( new Enemy() );
         setTimeout(
             spawnEnemy,
-            enemy_spawn
+            enemy_spawn * ( 1 / difficulty_modifier )
         );
     }
 
@@ -314,9 +381,8 @@
         next_tile = findNextTile( current_tile );
 
         if ( next_tile === null ) {
-            // This enemy is off the board!
-            window.stop = true;
-            throw 'enemy done';
+            game_over = true;
+			return;
         }
 
         // Find the new orientation
@@ -349,9 +415,51 @@
     }
 
     function fireTower( tower, enemy ) {
+		tower.target = enemy;
         tower.charge = 0;
 
-        tower.orientation = Math.floor( Math.random() * 4 );
+		// Determine tower orientation
+        var angle = Math.atan2(
+				enemy.position.y - tower.position.y,
+				enemy.position.x - tower.position.x
+			),
+			degrees = ( 360 / ( 2 * Math.PI ) ) * ( angle + Math.PI ) + 45,
+			octant;
+
+		if ( degrees > 360 ) {
+			degrees -= 360;
+		}
+
+		octant = Math.floor( degrees / 361 * 8 );
+
+		if ( octant === 0 ) {
+			tower.orientation = 2; // left
+
+		} else if ( octant === 1 ) {
+			tower.orientation = 5; // top-left
+
+		} else if ( octant === 2 ) {
+			tower.orientation = 0; // top
+
+		} else if ( octant === 3 ) {
+			tower.orientation = 4; // top-right
+
+		} else if ( octant === 4 ) {
+			tower.orientation = 1; // right
+
+		} else if ( octant === 5 ) {
+			tower.orientation = 7; // bottom-right
+
+		} else if ( octant === 6 ) {
+			tower.orientation = 3; // bottom
+
+		} else if ( octant === 7 ) {
+			tower.orientation = 6; // bottom-left
+
+		}
+
+		// Create bullet
+		bullets.push( new Bullet( tower, enemy ) );
     }
 
     function updateTower( tower, delta ) {
@@ -370,19 +478,32 @@
             return;
         }
 
-        // Find the closest enemy
-        for ( i = 0; i < enemies.length; i++ ) {
-            distance = enemies[i].position.distanceTo( tower.position );
+		// Does the tower already have a target, and is that target in range?
+		if (
+			tower.target !== null &&
+			tower.target.health > 0 &&
+			tower.target.position.distanceTo( tower.position ) <= tower_range
+		) {
 
-            if ( distance <= tower_range ) {
-                // This enemy is in range, is it the closest we've found?
-                if ( distance < closest_distance ) {
-                    // It is the closest
-                    closest_enemy = enemies[i];
-                    closest_distance = distance;
-                }
-            }
-        }
+			closest_enemy = tower.target;
+
+		} else {
+
+			// Find the closest enemy
+			for ( i = 0; i < enemies.length; i++ ) {
+				distance = enemies[i].position.distanceTo( tower.position );
+
+				if ( distance <= tower_range ) {
+					// This enemy is in range, is it the closest we've found?
+					if ( distance < closest_distance ) {
+						// It is the closest
+						closest_enemy = enemies[i];
+						closest_distance = distance;
+					}
+				}
+			}
+
+		}
 
         if ( closest_enemy !== undefined ) {
             // Something is in range, fire!
@@ -399,17 +520,76 @@
         }
     }
 
-    function drawHud() {
-        ctx.fillStyle = '#dddd88';
-        ctx.fillText( gold, canvas.width - 100, 30 );
+	function drawBullets( delta ) {
+		var i,
+			bullet,
+			position_change = new Vector( 0, 0 );
 
+		ctx.fillStyle = '#111';
+
+		for ( i = 0; i < bullets.length; i++ ) {
+			bullet = bullets[i];
+
+			position_change.set(
+				bullet.target.position.x - bullet.position.x,
+				bullet.target.position.y - bullet.position.y
+			);
+			position_change.normalize();
+
+			bullet.position.x += position_change.x * bullet_speed * delta / 1000;
+			bullet.position.y += position_change.y * bullet_speed * delta / 1000;
+
+			// Check for hit
+			if ( bullet.position.distanceTo( bullet.target.position ) <= bullet_hit_radius ) {
+				// It's a hit!
+				bullet.target.applyDamage();
+
+				// Remove this bullet from the array
+				bullets.splice( i, 1 );
+
+				// Decrement `i` so the for loop continues with the correct bullet
+				i--;
+				continue;
+			}
+
+			ctx.beginPath();
+			ctx.arc(
+				bullet.position.x,
+				bullet.position.y,
+				2, // radius
+				0,
+				Math.PI * 2,
+				false
+			);
+			ctx.fill();
+		}
+	}
+
+	function drawExplosions( delta ) {
+		var i,
+			explosion;
+
+		for ( i = 0; i < explosions.length; i++ ) {
+			explosion = explosions[i];
+			drawEntity( explosion, delta );
+			if ( explosion.sprite.current_frame > 5 ) {
+				// Animation is done, remove this explosion
+				explosions.splice( i, 1 );
+				i--;
+			}
+		}
+	}
+
+    function drawHud() {
         ctx.fillStyle = '#000';
-        ctx.fillText( score, canvas.width - 20, 30 );
+        ctx.fillText( 'score ' + Math.floor( score ), canvas.width - 20, 30 );
+
+		ctx.fillStyle = '#dddd88';
+		ctx.fillText( '\u00A7' + Math.floor( gold ), canvas.width - 20, 60 );
     }
 
     function render() {
-        if ( window.stop !== true )
-            requestAnimationFrame( render );
+		animation_request = requestAnimationFrame( render );
 
         var delta, // How many milliseconds have gone by since the last render
             now = Date.now(); // The current time
@@ -424,10 +604,32 @@
             delta = Math.min( delta, 30 );
         }
 
-        drawGround();
+		// Increase difficulty
+		difficulty_modifier += modifier_increase * delta / 1000;
+		enemy_speed += difficulty_modifier * 0.01;
+
+		drawGround();
         drawEnemies( delta );
         drawTowers( delta );
+		drawBullets( delta );
+		drawExplosions( delta );
         drawHud();
+
+		if ( game_over ) {
+			// This enemy is off the board!
+			cancelAnimationFrame( animation_request );
+
+			// Draw end screen
+			ctx.fillStyle = '#000';
+			ctx.fillRect( 0, 0, canvas.width, canvas.height );
+
+			ctx.fillStyle = '#fff';
+			ctx.textAlign = 'center';
+			ctx.font = '32px Arial';
+			ctx.fillText( 'You Lost', canvas.width / 2, canvas.height / 2 );
+			ctx.font = '26px Arial';
+			ctx.fillText( 'score ' + Math.round( score ), canvas.width / 2, canvas.height / 2 + 50 );
+		}
 
         last_render_time = now;
     }
