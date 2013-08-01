@@ -1,3 +1,29 @@
+// http://www.paulirish.com/2011/requestanimationframe-for-smart-animating/
+(function() {
+	var lastTime = 0;
+	var vendors = ['webkit', 'moz'];
+	for(var x = 0; x < vendors.length && !window.requestAnimationFrame; ++x) {
+		window.requestAnimationFrame = window[vendors[x]+'RequestAnimationFrame'];
+		window.cancelAnimationFrame =
+			window[vendors[x]+'CancelAnimationFrame'] || window[vendors[x]+'CancelRequestAnimationFrame'];
+	}
+
+	if (!window.requestAnimationFrame)
+		window.requestAnimationFrame = function(callback, element) {
+			var currTime = new Date().getTime();
+			var timeToCall = Math.max(0, 16 - (currTime - lastTime));
+			var id = window.setTimeout(function() { callback(currTime + timeToCall); },
+				timeToCall);
+			lastTime = currTime + timeToCall;
+			return id;
+		};
+
+	if (!window.cancelAnimationFrame)
+		window.cancelAnimationFrame = function(id) {
+			clearTimeout(id);
+		};
+}());
+
 (function(){
     function Vector( x, y ) {
         this.x = x;
@@ -50,7 +76,7 @@
 
         Entity.call( this, sprite, starting_position );
 
-        this.health = 100 * difficulty_modifier;
+        this.health = 70 * difficulty_modifier;
     }
     Enemy.prototype = new Entity();
 	Enemy.prototype.applyDamage = function() {
@@ -79,6 +105,9 @@
 
 			// Create explosion
 			explosions.push( new Explosion( this.position ) );
+
+			explosion_sound.currentTime = 0;
+			explosion_sound.play();
 		}
 	};
 
@@ -112,6 +141,9 @@
 		game_over = false, // Set to `true` when game ends
 		animation_request, // Result of the most recent requestAnimationFrame
         last_render_time = null,// Time of last frame render, used to calculate the delta between renders
+
+		cannon_sound = new Audio(),
+		explosion_sound = new Audio(),
 
         map = [ // representation of the game map, 0 is field and 1 is road
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -156,6 +188,9 @@
 
 		difficulty_modifier = 1, // Higher modifier means more difficulty
 		modifier_increase = 0.03; // How much to add to the modifier every second
+
+	cannon_sound.src = 'sounds/cannon.mp3';
+	explosion_sound.src = 'sounds/explosion.mp3';
 
     function findRoute() {
         var current_tile = [
@@ -242,6 +277,7 @@
         ctx = canvas.getContext( '2d' );
 
         canvas.height = canvas.width = 500;
+		canvas.style.position = 'relative'; // make Firefox's layerX/Y correct for click event
         document.body.appendChild( canvas );
         canvas.addEventListener( 'click', handleClick );
 
@@ -460,6 +496,8 @@
 
 		// Create bullet
 		bullets.push( new Bullet( tower, enemy ) );
+		cannon_sound.currentTime = 0;
+		cannon_sound.play();
     }
 
     function updateTower( tower, delta ) {
